@@ -1,0 +1,142 @@
+// Financial Habits & Behavioural Resilience
+//
+// NOTE ON SQLITE:
+// This project targets SQLite for zero-setup local runs. SQLite does not support
+// native enums, so status-like fields are stored as String and validated with Zod
+// (see src/lib/constants.ts + src/lib/validation.ts). To move to PostgreSQL, change
+// `provider` below to "postgresql", point DATABASE_URL at your instance, and you may
+// optionally convert those String columns to native enums.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  sessions  Session[]
+  decisions Decision[]
+  rules     Rule[]
+  settings UserSettings?
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  /// Rule 1: decisions above this amount are treated as high-impulse-risk.
+  amountThreshold Float @default(500)
+
+  /// Default cooling-off length in hours, used when the user does not pick one.
+  defaultCoolingOffHours Int @default(24)
+
+  /// Rule 4: window (in days) used to count repeat spending in a category.
+  categoryWindowDays Int @default(30)
+
+  /// Rule 4: number of same-category decisions in the window that triggers a warning.
+  categoryRepeatLimit Int @default(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Decision {
+  id     String @id @default(cuid())
+  userId String
+
+  title          String
+  amount         Float
+  category       String
+  reason         String
+  emotionalState String
+  urgency        String
+
+  /// Feeds Rule 3: "high urgency but not essential" is an impulse-risk signal.
+  essential Boolean @default(true)
+
+  notes String?
+
+  /// One of COOLING_PERIOD keys: 1h | 24h | 3d | 7d
+  coolingOffPeriod String
+
+  coolingOffEndsAt DateTime
+
+  /// COOLING_OFF | RECONSIDERED | APPROVED | CANCELLED
+  status String @default("COOLING_OFF")
+
+  /// JSON array of rule keys that fired at creation time (snapshot for the journal).
+  ruleFlags String @default("[]")
+
+  /// True when the user abandoned the purchase after the cooling-off period.
+  resilienceShown Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reflection DecisionReflection?
+
+  @@index([userId, status])
+  @@index([userId, category])
+  @@index([userId, createdAt])
+}
+
+model DecisionReflection {
+  id         String @id @default(cuid())
+  decisionId String @unique
+
+  stillNeeded Boolean
+  affordable  Boolean
+  planned     Boolean
+  affectsGoal Boolean
+
+  /// APPROVED | RECONSIDERED | CANCELLED — what the user actually did.
+  finalDecision String
+
+  reflection String?
+
+  createdAt DateTime @default(now())
+
+  decision Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+}
+
+model Rule {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Stable machine key (HIGH_AMOUNT, EMOTIONAL_STATE, ...) so the engine can match.
+  key   String
+  name  String
+  description String
+
+  enabled Boolean @default(true)
+
+  /// Rule-specific numeric threshold. Null when the rule needs no threshold.
+  threshold Float?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+}
